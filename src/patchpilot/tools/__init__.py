@@ -8,7 +8,16 @@
 from patchpilot.tools.base import Tool, ToolError, ToolRegistry
 from patchpilot.tools.files import ListFilesTool, ReadFileTool
 from patchpilot.tools.search import SearchTextTool
+from patchpilot.tools.patch import ApplyPatchTool
+from patchpilot.tools.shell import RunCommandTool
 
 __all__ = [
-    "ListFilesTool", "ReadFileTool", "SearchTextTool", "Tool", "ToolError", "ToolRegistry"
+    "ApplyPatchTool",
+    "ListFilesTool", 
+    "ReadFileTool", 
+    "RunCommandTool",
+    "SearchTextTool", 
+    "Tool", 
+    "ToolError", 
+    "ToolRegistry"
 ]
