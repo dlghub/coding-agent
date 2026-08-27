@@ -77,7 +77,7 @@ class RichEventSink:
         preview = result.output
         if len(preview) > 2_000:
             preview = preview[:2_000] + "\n[终端预览已截断]"
-        self.console.print(preview, style="dim")
+        self.console.print(preview, style="dim", markup=False, highlight=False)
 
     def agent_finished(self, answer: str) -> None:
         self.console.print()

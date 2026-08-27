@@ -17,10 +17,9 @@ def test_resolve_normal_relative_path(tmp_path: Path) -> None:
     assert workspace.resolve("src/app.py") == (tmp_path / "src/app.py").resolve()
 
 
-def test_rejects_empty_path(tmp_path: Path) -> None:
+def test_empty_path_resolves_to_workspace_root(tmp_path: Path) -> None:
     workspace = Workspace(tmp_path)
-    with pytest.raises(WorkspaceViolation, match="不能为空"):
-        workspace.resolve("")
+    assert workspace.resolve("") == tmp_path.resolve()
 
 
 def test_rejects_parent_directory_escape(tmp_path: Path) -> None:

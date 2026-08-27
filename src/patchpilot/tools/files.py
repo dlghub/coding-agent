@@ -22,6 +22,7 @@ IGNORED_DIRECTORIES = {
     "build",
     "dist",
     "node_modules",
+    "patchpilot.egg-info",
 }
 
 
@@ -71,6 +72,9 @@ class ListFilesTool(Tool):
         if not isinstance(path, str):
             raise ToolError("参数 path 必须是字符串")
 
+        # 模型常用空字符串表示当前工作区
+        path = path.strip() or "."
+
         max_depth = _integer_argument(arguments, "max_depth", 3, 0, 8)
         root = self.workspace.resolve(path)
         if not root.exists():
@@ -106,7 +110,10 @@ class ListFilesTool(Tool):
             raise ToolError(f"没有权限读取目录：{current}") from error
 
         for child in children:
-            if child.is_dir() and child.name in IGNORED_DIRECTORIES:
+            if self.workspace.is_sensitive(child):
+                continue
+
+            if child.is_dir() and (child.name in IGNORED_DIRECTORIES or child.name.endswith(".egg-info")):
                 continue
             if len(lines) >= self.max_entries:
                 return True

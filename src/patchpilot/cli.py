@@ -2,9 +2,10 @@
 文件名：cli.py
 
 功能：
-提供 PatchPilot 命令行入口，并组装模型、上下文、工具和 Agent。
+提供 PatchPilot 命令行入口，并从工作区外加载凭据。
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -38,8 +39,26 @@ app = typer.Typer(
 console = Console()
 
 
+def configuration_path() -> Path:
+    """返回显式配置路径，或用户目录下的默认安全路径。"""
+
+    explicit = os.getenv("PATCHPILOT_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return (Path.home() / ".config" / "patchpilot" / ".env").resolve()
+
+
+def load_configuration() -> Path:
+    """加载外置配置；已有环境变量不会被文件内容覆盖。"""
+
+    path = configuration_path()
+    if path.is_file():
+        load_dotenv(path, override=False)
+    return path
+
+
 def build_tools(workspace: Workspace, read_only: bool) -> list[Tool]:
-    """根据运行模式创建工具；只读模式从能力层面排除修改行为。"""
+    """根据运行模式创建工具；只读模式不注册修改能力。"""
 
     tools: list[Tool] = [
         ListFilesTool(workspace),
@@ -51,6 +70,24 @@ def build_tools(workspace: Workspace, read_only: bool) -> list[Tool]:
     return tools
 
 
+def ensure_config_outside_writable_workspace(
+    config_path: Path,
+    workspace: Workspace,
+    read_only: bool,
+) -> None:
+    """防止命令工具从工作区中直接读取配置文件。"""
+
+    if read_only or not config_path.exists():
+        return
+    try:
+        config_path.relative_to(workspace.root)
+    except ValueError:
+        return
+    raise ConfigurationError(
+        "完整模式要求配置文件位于工作区外部；请缩小 --workspace 范围"
+    )
+
+
 @app.callback()
 def root() -> None:
     """PatchPilot 命令行根入口。"""
@@ -60,25 +97,16 @@ def root() -> None:
 def run(
     task: str = typer.Argument(..., help="需要 Agent 完成的编程任务。"),
     workspace: Path = typer.Option(
-        Path("."),
-        "--workspace",
-        "-w",
+        Path("."), "--workspace", "-w",
         help="Agent 可以访问的项目根目录。",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True,
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True,
     ),
     max_steps: Optional[int] = typer.Option(
-        None,
-        "--max-steps",
-        min=1,
-        max=100,
+        None, "--max-steps", min=1, max=100,
         help="覆盖环境变量中的最大循环步数。",
     ),
     read_only: bool = typer.Option(
-        False,
-        "--read-only",
+        False, "--read-only",
         help="只允许查看和搜索文件，禁止修改文件或执行命令。",
     ),
 ) -> None:
@@ -88,10 +116,13 @@ def run(
         console.print("[red]错误：任务内容不能为空。[/red]")
         raise typer.Exit(code=2)
 
-    load_dotenv()
+    config_path = load_configuration()
     try:
         settings = Settings.from_env()
         safe_workspace = Workspace(workspace)
+        ensure_config_outside_writable_workspace(
+            config_path, safe_workspace, read_only
+        )
         registry = ToolRegistry(
             build_tools(safe_workspace, read_only),
             max_output_chars=settings.max_tool_output,

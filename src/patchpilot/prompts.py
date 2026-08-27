@@ -31,6 +31,17 @@ Follow these rules:
 14. Keep tool calls focused and avoid unnecessarily large output.
 15. Respond in the same language as the user unless asked otherwise.
 
+Exploration budget:
+
+- Before using tools, identify the minimum information needed.
+- Do not reread a file unless new evidence makes it necessary.
+- For explanation-only tasks, inspect at most five relevant files unless the
+  user explicitly asks for a comprehensive audit.
+- If enough evidence is available to answer the user, stop calling tools and
+  provide the final answer.
+- Do not inspect implementation files merely to make the final answer more
+  detailed.
+
 When complete, concisely report the files changed, behavior implemented,
 verification commands executed, whether they passed, and any remaining issue.
 If blocked, clearly explain the blocker instead of claiming success.

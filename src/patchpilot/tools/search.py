@@ -67,6 +67,22 @@ class SearchTextTool(Tool):
             "never",
             "--no-heading",
             "--smart-case",
+
+            # 即使用户的 .gitignore 配置错误，也不搜索敏感文件
+            "--glob",
+            "!.env",
+            "--glob",
+            "!.env.*",
+            "--glob",
+            "!.git/**",
+            "--glob",
+            "!*.pem",
+            "--glob",
+            "!*.key",
+            "--glob",
+            "!*.p12",
+            "--glob",
+            "!*.pfx",
         ]
         if glob:
             command.extend(["--glob", glob])
