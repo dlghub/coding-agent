@@ -2,7 +2,7 @@
 文件名：cli.py
 
 功能：
-提供 PatchPilot 命令行入口，并从工作区外加载凭据。
+组装配置、审批、会话日志、工具、模型和 Agent。
 """
 
 import os
@@ -14,9 +14,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from patchpilot.agent import Agent, MaxStepsExceeded
+from patchpilot.approvals import InteractiveApproval
 from patchpilot.config import ConfigurationError, Settings
 from patchpilot.context import ContextManager
-from patchpilot.events import RichEventSink
+from patchpilot.events import CompositeEventSink, JsonlEventSink, RichEventSink
 from patchpilot.model import ModelError, OpenAIClient
 from patchpilot.prompts import SYSTEM_PROMPT
 from patchpilot.tools import (
@@ -40,8 +41,6 @@ console = Console()
 
 
 def configuration_path() -> Path:
-    """返回显式配置路径，或用户目录下的默认安全路径。"""
-
     explicit = os.getenv("PATCHPILOT_CONFIG")
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -49,8 +48,6 @@ def configuration_path() -> Path:
 
 
 def load_configuration() -> Path:
-    """加载外置配置；已有环境变量不会被文件内容覆盖。"""
-
     path = configuration_path()
     if path.is_file():
         load_dotenv(path, override=False)
@@ -58,8 +55,6 @@ def load_configuration() -> Path:
 
 
 def build_tools(workspace: Workspace, read_only: bool) -> list[Tool]:
-    """根据运行模式创建工具；只读模式不注册修改能力。"""
-
     tools: list[Tool] = [
         ListFilesTool(workspace),
         ReadFileTool(workspace),
@@ -75,8 +70,6 @@ def ensure_config_outside_writable_workspace(
     workspace: Workspace,
     read_only: bool,
 ) -> None:
-    """防止命令工具从工作区中直接读取配置文件。"""
-
     if read_only or not config_path.exists():
         return
     try:
@@ -86,6 +79,14 @@ def ensure_config_outside_writable_workspace(
     raise ConfigurationError(
         "完整模式要求配置文件位于工作区外部；请缩小 --workspace 范围"
     )
+
+
+def confirm_action(message: str) -> bool:
+    """在终端展示操作摘要并请求用户确认。"""
+
+    console.print("\n需要审批", style="bold yellow")
+    console.print(message, markup=False)
+    return typer.confirm("是否允许", default=False)
 
 
 @app.callback()
@@ -109,6 +110,14 @@ def run(
         False, "--read-only",
         help="只允许查看和搜索文件，禁止修改文件或执行命令。",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="自动批准可审批操作；硬性禁止规则仍然生效。",
+    ),
+    no_log: bool = typer.Option(
+        False, "--no-log",
+        help="不写入本次运行的 JSONL 会话日志。",
+    ),
 ) -> None:
     """在指定工作区执行一个编程任务。"""
 
@@ -120,13 +129,22 @@ def run(
     try:
         settings = Settings.from_env()
         safe_workspace = Workspace(workspace)
-        ensure_config_outside_writable_workspace(
-            config_path, safe_workspace, read_only
-        )
+        ensure_config_outside_writable_workspace(config_path, safe_workspace, read_only)
+
+        approval = InteractiveApproval(confirm_action, auto_approve=yes)
         registry = ToolRegistry(
             build_tools(safe_workspace, read_only),
             max_output_chars=settings.max_tool_output,
+            approval=approval,
         )
+
+        sinks = [RichEventSink(console)]
+        session_log = None
+        if not no_log:
+            session_log = JsonlEventSink(safe_workspace.root, read_only)
+            sinks.append(session_log)
+            console.print(f"[dim]会话日志：{session_log.path}[/dim]", markup=False)
+
         model = OpenAIClient(
             api_key=settings.api_key,
             base_url=settings.base_url,
@@ -137,7 +155,7 @@ def run(
             model=model,
             context=ContextManager(SYSTEM_PROMPT),
             tools=registry,
-            events=RichEventSink(console),
+            events=CompositeEventSink(sinks),
             max_steps=max_steps or settings.max_steps,
         )
         agent.run(task)
@@ -156,8 +174,6 @@ def run(
 
 
 def main() -> None:
-    """项目安装后的命令行入口。"""
-
     app()
 
 
