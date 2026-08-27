@@ -24,6 +24,7 @@ from patchpilot.tools import (
     ReadFileTool,
     RunCommandTool,
     SearchTextTool,
+    Tool,
     ToolRegistry,
 )
 from patchpilot.workspace import Workspace
@@ -35,6 +36,19 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def build_tools(workspace: Workspace, read_only: bool) -> list[Tool]:
+    """根据运行模式创建工具；只读模式从能力层面排除修改行为。"""
+
+    tools: list[Tool] = [
+        ListFilesTool(workspace),
+        ReadFileTool(workspace),
+        SearchTextTool(workspace),
+    ]
+    if not read_only:
+        tools.extend([ApplyPatchTool(workspace), RunCommandTool(workspace)])
+    return tools
 
 
 @app.callback()
@@ -62,6 +76,11 @@ def run(
         max=100,
         help="覆盖环境变量中的最大循环步数。",
     ),
+    read_only: bool = typer.Option(
+        False,
+        "--read-only",
+        help="只允许查看和搜索文件，禁止修改文件或执行命令。",
+    ),
 ) -> None:
     """在指定工作区执行一个编程任务。"""
 
@@ -74,13 +93,7 @@ def run(
         settings = Settings.from_env()
         safe_workspace = Workspace(workspace)
         registry = ToolRegistry(
-            [
-                ListFilesTool(safe_workspace),
-                ReadFileTool(safe_workspace),
-                SearchTextTool(safe_workspace),
-                ApplyPatchTool(safe_workspace),
-                RunCommandTool(safe_workspace),
-            ],
+            build_tools(safe_workspace, read_only),
             max_output_chars=settings.max_tool_output,
         )
         model = OpenAIClient(
