@@ -1,0 +1,45 @@
+# PatchPilot 的构建、依赖与测试配置。
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchpilot"
+version = "0.1.0"
+description = "一个自行实现工具调用与本地执行循环的编程智能体"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40,<3",
+    "python-dotenv>=1.0,<2",
+    "rich>=13.7,<15",
+    "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["patchpilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
