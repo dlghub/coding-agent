@@ -10,7 +10,7 @@
 
 import json
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from openai import (
     APIConnectionError,
@@ -54,12 +54,14 @@ class OpenAIClient:
         max_retries: int = 3,
         *,
         client: Any | None = None,
+        retry_callback: Callable[[int, int, str, float], None] | None = None,
     ) -> None:
         if max_retries < 1:
             raise ValueError("max_retries 必须至少为 1")
 
         self.model = model
         self.max_retries = max_retries
+        self.retry_callback = retry_callback
         # client 参数用于离线测试；生产环境创建真实 SDK 客户端。
         self._client = client or OpenAI(
             api_key=api_key,
@@ -85,13 +87,31 @@ class OpenAIClient:
                     tool_choice="auto",
                 )
                 return self._decode_response(response)
-            except (RateLimitError, APITimeoutError, APIConnectionError) as error:
+            except (
+                RateLimitError,
+                APITimeoutError,
+                APIConnectionError,
+                ModelProtocolError,
+            ) as error:
                 if attempt == self.max_retries - 1:
+                    detail = (
+                        f"：{error}"
+                        if isinstance(error, ModelProtocolError)
+                        else ""
+                    )
                     raise ModelError(
                         f"模型请求在 {self.max_retries} 次尝试后仍然失败："
-                        f"{type(error).__name__}"
+                        f"{type(error).__name__}{detail}"
                     ) from error
-                time.sleep(2**attempt)
+                delay = float(2**attempt)
+                if self.retry_callback is not None:
+                    self.retry_callback(
+                        attempt + 2,
+                        self.max_retries,
+                        type(error).__name__,
+                        delay,
+                    )
+                time.sleep(delay)
             except APIStatusError as error:
                 # 非临时 HTTP 状态错误通常需要修改配置或权限，立即停止。
                 raise ModelError(
@@ -130,30 +150,44 @@ class OpenAIClient:
             raise ModelProtocolError("模型响应中缺少 choices")
 
         choice = response.choices[0]
-        message = choice.message
+        message = getattr(choice, "message", None)
+        if message is None:
+            raise ModelProtocolError("模型响应中缺少 message")
+
         tool_calls: list[ToolCall] = []
         for raw_call in getattr(message, "tool_calls", None) or []:
-            raw_arguments = raw_call.function.arguments
+            function = getattr(raw_call, "function", None)
+            name = getattr(function, "name", None)
+            raw_arguments = getattr(function, "arguments", None)
+            call_id = getattr(raw_call, "id", None)
+            if not isinstance(call_id, str) or not isinstance(name, str):
+                raise ModelProtocolError("工具调用缺少 id 或 function.name")
             try:
                 arguments = json.loads(raw_arguments)
             except (json.JSONDecodeError, TypeError) as error:
                 raise ModelProtocolError(
-                    f"工具 {raw_call.function.name} 的参数不是合法 JSON"
+                    f"工具 {name} 的参数不是合法 JSON"
                 ) from error
             if not isinstance(arguments, dict):
                 raise ModelProtocolError(
-                    f"工具 {raw_call.function.name} 的参数必须是 JSON 对象"
+                    f"工具 {name} 的参数必须是 JSON 对象"
                 )
             tool_calls.append(
                 ToolCall(
-                    id=raw_call.id,
-                    name=raw_call.function.name,
+                    id=call_id,
+                    name=name,
                     arguments=arguments,
                 )
             )
 
+        content = getattr(message, "content", None)
+        if content is not None and not isinstance(content, str):
+            raise ModelProtocolError("模型响应 content 必须是字符串或 null")
+        if not tool_calls and not (content and content.strip()):
+            raise ModelProtocolError("模型返回了空响应")
+
         return ModelResponse(
-            content=getattr(message, "content", None),
+            content=content,
             tool_calls=tool_calls,
             finish_reason=getattr(choice, "finish_reason", None),
         )

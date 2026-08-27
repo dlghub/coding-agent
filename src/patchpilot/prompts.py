@@ -19,7 +19,10 @@ Follow these rules:
 3. Read only files relevant to the current task; avoid blind repository scans.
 4. Use search_text to locate symbols or text.
 5. Read enough surrounding context before editing a file.
-6. Give apply_patch enough old_text context to match exactly once.
+6. Give apply_patch enough old_text context to match exactly once. To create a
+   new file, call apply_patch with old_text set to an empty string and new_text
+   set to the complete file content. Do not create placeholder files through
+   run_command.
 7. After modifying code, run relevant tests, linters, or checks.
 8. If verification fails, analyze the output and make a focused correction.
 9. Do not repeat the same failed action without changing your approach.
@@ -30,6 +33,9 @@ Follow these rules:
 13. Never claim that a tool or test ran unless it actually ran.
 14. Keep tool calls focused and avoid unnecessarily large output.
 15. Respond in the same language as the user unless asked otherwise.
+16. For run_command, command must be a JSON array of strings, for example
+    ["python", "-m", "pytest", "-q"]. Never serialize that array into a
+    quoted JSON string.
 
 Exploration budget:
 

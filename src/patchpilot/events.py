@@ -30,6 +30,9 @@ def safe_tool_arguments(call: ToolCall) -> dict:
 class EventSink(Protocol):
     def agent_started(self, task: str) -> None: ...
     def step_started(self, step: int, max_steps: int) -> None: ...
+    def model_retrying(
+        self, attempt: int, max_attempts: int, reason: str, delay: float
+    ) -> None: ...
     def tool_started(self, call: ToolCall) -> None: ...
     def tool_finished(self, call: ToolCall, result: ToolResult) -> None: ...
     def agent_finished(self, answer: str) -> None: ...
@@ -38,6 +41,9 @@ class EventSink(Protocol):
 class NullEventSink:
     def agent_started(self, task: str) -> None: pass
     def step_started(self, step: int, max_steps: int) -> None: pass
+    def model_retrying(
+        self, attempt: int, max_attempts: int, reason: str, delay: float
+    ) -> None: pass
     def tool_started(self, call: ToolCall) -> None: pass
     def tool_finished(self, call: ToolCall, result: ToolResult) -> None: pass
     def agent_finished(self, answer: str) -> None: pass
@@ -54,6 +60,12 @@ class CompositeEventSink:
 
     def step_started(self, step: int, max_steps: int) -> None:
         for sink in self.sinks: sink.step_started(step, max_steps)
+
+    def model_retrying(
+        self, attempt: int, max_attempts: int, reason: str, delay: float
+    ) -> None:
+        for sink in self.sinks:
+            sink.model_retrying(attempt, max_attempts, reason, delay)
 
     def tool_started(self, call: ToolCall) -> None:
         for sink in self.sinks: sink.tool_started(call)
@@ -91,6 +103,17 @@ class JsonlEventSink:
 
     def step_started(self, step: int, max_steps: int) -> None:
         self._write("step_started", step=step, max_steps=max_steps)
+
+    def model_retrying(
+        self, attempt: int, max_attempts: int, reason: str, delay: float
+    ) -> None:
+        self._write(
+            "model_retrying",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            reason=reason,
+            delay_seconds=delay,
+        )
 
     def tool_started(self, call: ToolCall) -> None:
         self._write(
@@ -143,6 +166,16 @@ class RichEventSink:
     def step_started(self, step: int, max_steps: int) -> None:
         self.console.print()
         self.console.rule(f"[bold blue]Step {step}/{max_steps}[/bold blue]")
+
+    def model_retrying(
+        self, attempt: int, max_attempts: int, reason: str, delay: float
+    ) -> None:
+        self.console.print(
+            f"模型响应异常（{reason}），{delay:g} 秒后进行第 "
+            f"{attempt}/{max_attempts} 次尝试……",
+            style="yellow",
+            markup=False,
+        )
 
     def tool_started(self, call: ToolCall) -> None:
         arguments = safe_tool_arguments(call)

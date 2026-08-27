@@ -6,8 +6,8 @@
 
 设计说明：
 第一版不解析复杂的 unified diff，而是使用精确文本替换。
-只有当 old_text 在目标文件中恰好出现一次时才执行修改，
-从而降低模型误改代码位置的风险。
+已有文件只有在 old_text 恰好出现一次时才执行修改；当目标文件
+不存在或为空时，允许使用空 old_text 创建内容。
 """
 
 import difflib
@@ -25,8 +25,9 @@ class ApplyPatchTool(Tool):
 
     name = "apply_patch"
     description = (
-        "修改工作区内的文本文件。old_text 必须在文件中恰好出现一次，"
-        "修改成功后返回 unified diff。"
+        "修改或创建工作区内的文本文件。修改已有非空文件时，old_text "
+        "必须恰好出现一次；创建新文件时使用空 old_text。修改成功后返回 "
+        "unified diff。"
     )
     parameters = {
         "type": "object",
@@ -60,41 +61,48 @@ class ApplyPatchTool(Tool):
         """校验参数、执行原子替换并返回差异。"""
 
         path = self._require_string(arguments, "path")
-        old_text = self._require_string(arguments, "old_text")
+        old_text = self._require_string(
+            arguments,
+            "old_text",
+            allow_empty=True,
+        )
         new_text = self._require_string(
             arguments,
             "new_text",
             allow_empty=True,
         )
 
-        if not old_text:
-            raise ToolError("old_text 不能为空")
-
         target = self.workspace.resolve(path)
-        self._validate_target(target, path)
-
-        original = self._read_text(target, path)
+        original = self._load_original(target, path, old_text)
 
         if len(original) > self.max_file_chars:
             raise ToolError(
                 f"文件过大，最多允许修改 {self.max_file_chars} 个字符"
             )
 
-        occurrence_count = original.count(old_text)
+        if not old_text:
+            if original:
+                raise ToolError(
+                    "仅创建新文件或写入空文件时可以使用空 old_text；"
+                    "请先读取已有文件并提供唯一匹配文本"
+                )
+            updated = new_text
+        else:
+            occurrence_count = original.count(old_text)
 
-        if occurrence_count == 0:
-            raise ToolError(
-                "未找到 old_text，文件可能已经发生变化；"
-                "请重新读取文件后再生成补丁"
-            )
+            if occurrence_count == 0:
+                raise ToolError(
+                    "未找到 old_text，文件可能已经发生变化；"
+                    "请重新读取文件后再生成补丁"
+                )
 
-        if occurrence_count > 1:
-            raise ToolError(
-                f"old_text 在文件中出现了 {occurrence_count} 次，"
-                "请提供包含更多上下文的唯一文本"
-            )
+            if occurrence_count > 1:
+                raise ToolError(
+                    f"old_text 在文件中出现了 {occurrence_count} 次，"
+                    "请提供包含更多上下文的唯一文本"
+                )
 
-        updated = original.replace(old_text, new_text, 1)
+            updated = original.replace(old_text, new_text, 1)
 
         if updated == original:
             raise ToolError("替换前后内容没有变化")
@@ -126,14 +134,25 @@ class ApplyPatchTool(Tool):
 
         return value
 
-    def _validate_target(self, target: Path, display_path: str) -> None:
-        """确认目标是一个已存在的普通文件。"""
+    def _load_original(
+        self,
+        target: Path,
+        display_path: str,
+        old_text: str,
+    ) -> str:
+        """读取已有文件，或为使用空 old_text 的新文件返回空内容。"""
 
         if not target.exists():
-            raise ToolError(f"文件不存在：{display_path}")
+            if old_text:
+                raise ToolError(f"文件不存在：{display_path}")
+            if not target.parent.is_dir():
+                raise ToolError(f"父目录不存在：{target.parent}")
+            return ""
 
         if not target.is_file():
             raise ToolError(f"路径不是文件：{display_path}")
+
+        return self._read_text(target, display_path)
 
     def _read_text(self, target: Path, display_path: str) -> str:
         """读取 UTF-8 文本，并保留原始换行风格。"""
@@ -176,8 +195,9 @@ class ApplyPatchTool(Tool):
                 # 确保操作系统已经接收到写入内容
                 os.fsync(stream.fileno())
 
-            # 保留目标文件原来的权限位，例如可执行权限
-            os.chmod(temporary_path, target.stat().st_mode)
+            # 已有文件保留原权限；新文件使用普通源码文件权限。
+            mode = target.stat().st_mode if target.exists() else 0o644
+            os.chmod(temporary_path, mode)
 
             # 同一文件系统中的 os.replace() 是原子操作
             os.replace(temporary_path, target)

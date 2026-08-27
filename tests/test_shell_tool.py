@@ -34,6 +34,33 @@ def test_run_command_returns_stdout_and_exit_code(
     assert "hello from agent" in output
 
 
+def test_run_command_accepts_json_encoded_string_array(
+    tmp_path: Path,
+) -> None:
+    tool = RunCommandTool(Workspace(tmp_path))
+
+    output = tool.execute(
+        {
+            "command": (
+                f'["{sys.executable}", "-c", '
+                '"print(\\"recovered\\")"]'
+            )
+        }
+    )
+
+    assert "退出码：0" in output
+    assert "recovered" in output
+
+
+def test_json_encoded_dangerous_command_remains_blocked(
+    tmp_path: Path,
+) -> None:
+    tool = RunCommandTool(Workspace(tmp_path))
+
+    with pytest.raises(ToolError, match="禁止"):
+        tool.execute({"command": '["rm", "-rf", "target"]'})
+
+
 def test_run_command_uses_workspace_as_current_directory(
     tmp_path: Path,
 ) -> None:

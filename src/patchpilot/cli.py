@@ -143,19 +143,21 @@ def run(
         if not no_log:
             session_log = JsonlEventSink(safe_workspace.root, read_only)
             sinks.append(session_log)
-            console.print(f"[dim]会话日志：{session_log.path}[/dim]", markup=False)
+            console.print(f"会话日志：{session_log.path}", style="dim", markup=False)
 
+        event_sink = CompositeEventSink(sinks)
         model = OpenAIClient(
             api_key=settings.api_key,
             base_url=settings.base_url,
             model=settings.model,
             timeout=settings.timeout,
+            retry_callback=event_sink.model_retrying,
         )
         agent = Agent(
             model=model,
             context=ContextManager(SYSTEM_PROMPT),
             tools=registry,
-            events=CompositeEventSink(sinks),
+            events=event_sink,
             max_steps=max_steps or settings.max_steps,
         )
         agent.run(task)

@@ -15,6 +15,7 @@ def test_session_log_records_events_and_redacts_patch_text(tmp_path) -> None:
     )
     sink.agent_started("fix test")
     sink.step_started(1, 5)
+    sink.model_retrying(2, 3, "ModelProtocolError", 1.0)
     sink.tool_started(call)
     sink.tool_finished(call, ToolResult("1", "apply_patch", True, "ok"))
     sink.agent_finished("done")
@@ -22,9 +23,9 @@ def test_session_log_records_events_and_redacts_patch_text(tmp_path) -> None:
     records = [json.loads(line) for line in sink.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"] for record in records] == [
         "session_created", "agent_started", "step_started",
-        "tool_started", "tool_finished", "agent_finished",
+        "model_retrying", "tool_started", "tool_finished", "agent_finished",
     ]
-    started = records[3]
+    started = records[4]
     assert "old_text" not in started["arguments"]
     assert started["arguments"]["old_text_chars"] == len("secret old")
     assert stat.S_IMODE(sink.path.stat().st_mode) == 0o600

@@ -41,6 +41,61 @@ def test_apply_patch_replaces_unique_text(tmp_path: Path) -> None:
     assert "+    return price * (1 - discount)" in output
 
 
+def test_apply_patch_creates_new_file_with_empty_old_text(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "new_module.py"
+    tool = ApplyPatchTool(Workspace(tmp_path))
+
+    output = tool.execute(
+        {
+            "path": "new_module.py",
+            "old_text": "",
+            "new_text": "VALUE = 42\n",
+        }
+    )
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+    assert "+++ b/new_module.py" in output
+
+
+def test_apply_patch_writes_empty_existing_file_with_empty_old_text(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "empty.py"
+    target.touch()
+    tool = ApplyPatchTool(Workspace(tmp_path))
+
+    tool.execute(
+        {
+            "path": "empty.py",
+            "old_text": "",
+            "new_text": "print('ready')\n",
+        }
+    )
+
+    assert target.read_text(encoding="utf-8") == "print('ready')\n"
+
+
+def test_apply_patch_rejects_empty_old_text_for_nonempty_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "existing.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    tool = ApplyPatchTool(Workspace(tmp_path))
+
+    with pytest.raises(ToolError, match="空 old_text"):
+        tool.execute(
+            {
+                "path": "existing.py",
+                "old_text": "",
+                "new_text": "VALUE = 2\n",
+            }
+        )
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
 def test_apply_patch_rejects_missing_old_text(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
     target.write_text("print('hello')\n", encoding="utf-8")

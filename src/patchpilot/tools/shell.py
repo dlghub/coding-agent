@@ -13,6 +13,7 @@
 后续仍应为高风险命令增加用户审批机制。
 """
 
+import json
 import os
 import shlex
 import subprocess
@@ -164,7 +165,17 @@ class RunCommandTool(Tool):
         )
 
     def _validate_command(self, value: Any) -> list[str]:
-        """确认 command 是非空字符串数组。"""
+        """确认 command 是非空字符串数组，并容错 JSON 数组字符串。"""
+
+        if isinstance(value, str):
+            if len(value) > 20_000:
+                raise ToolError("命令参数过长")
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise ToolError(
+                    "参数 command 必须是非空字符串数组"
+                ) from error
 
         if not isinstance(value, list) or not value:
             raise ToolError("参数 command 必须是非空字符串数组")

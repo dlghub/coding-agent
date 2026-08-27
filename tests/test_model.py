@@ -47,10 +47,17 @@ class FakeCompletions:
         return outcome
 
 
-def make_client(outcomes, max_retries=3):
+def make_client(outcomes, max_retries=3, retry_callback=None):
     completions = FakeCompletions(outcomes)
     sdk = namespace(chat=namespace(completions=completions))
-    client = OpenAIClient("secret", "https://example.test/v1", "test-model", max_retries=max_retries, client=sdk)
+    client = OpenAIClient(
+        "secret",
+        "https://example.test/v1",
+        "test-model",
+        max_retries=max_retries,
+        client=sdk,
+        retry_callback=retry_callback,
+    )
     return client, completions
 
 
@@ -85,15 +92,45 @@ def test_decodes_text_and_multiple_tool_calls() -> None:
 @pytest.mark.parametrize("arguments", ["not-json", "[]", "null"])
 def test_rejects_invalid_tool_arguments(arguments: str) -> None:
     call = namespace(id="1", function=namespace(name="read_file", arguments=arguments))
-    client, _ = make_client([response(content=None, tool_calls=[call])])
-    with pytest.raises(ModelProtocolError):
+    client, _ = make_client(
+        [response(content=None, tool_calls=[call])],
+        max_retries=1,
+    )
+    with pytest.raises(ModelError, match="ModelProtocolError"):
         client.complete([Message(role="user", content="inspect")], [])
 
 
 def test_rejects_empty_choices() -> None:
-    client, _ = make_client([namespace(choices=[])])
-    with pytest.raises(ModelProtocolError, match="choices"):
+    client, _ = make_client([namespace(choices=[])], max_retries=1)
+    with pytest.raises(ModelError, match="choices"):
         client.complete([Message(role="user", content="inspect")], [])
+
+
+def test_retries_empty_choices_then_succeeds(monkeypatch) -> None:
+    retries = []
+    client, completions = make_client(
+        [namespace(choices=[]), response(content="recovered")],
+        retry_callback=lambda *values: retries.append(values),
+    )
+    monkeypatch.setattr("patchpilot.model.time.sleep", lambda _: None)
+
+    result = client.complete([Message(role="user", content="inspect")], [])
+
+    assert result.content == "recovered"
+    assert len(completions.calls) == 2
+    assert retries == [(2, 3, "ModelProtocolError", 1.0)]
+
+
+def test_retries_empty_content_then_succeeds(monkeypatch) -> None:
+    client, completions = make_client(
+        [response(content=""), response(content="done")]
+    )
+    monkeypatch.setattr("patchpilot.model.time.sleep", lambda _: None)
+
+    result = client.complete([Message(role="user", content="inspect")], [])
+
+    assert result.content == "done"
+    assert len(completions.calls) == 2
 
 
 def test_retries_timeout_then_succeeds(monkeypatch) -> None:
@@ -106,6 +143,20 @@ def test_retries_timeout_then_succeeds(monkeypatch) -> None:
     assert result.content == "ok"
     assert len(completions.calls) == 2
     assert sleeps == [1]
+
+
+def test_reports_timeout_retry_without_exposing_error_details(monkeypatch) -> None:
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    retries = []
+    client, _ = make_client(
+        [APITimeoutError(request=request), response(content="ok")],
+        retry_callback=lambda *values: retries.append(values),
+    )
+    monkeypatch.setattr("patchpilot.model.time.sleep", lambda _: None)
+
+    client.complete([Message(role="user", content="hello")], [])
+
+    assert retries == [(2, 3, "APITimeoutError", 1.0)]
 
 
 def test_stops_after_retry_limit(monkeypatch) -> None:
