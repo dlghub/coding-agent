@@ -11,7 +11,6 @@ API Key 只能通过环境变量传入，不能写入代码或提交到 Git 仓�
 import os
 from dataclasses import dataclass
 
-from openai import api_key
 
 
 class ConfigurationError(Exception):

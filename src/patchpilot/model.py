@@ -9,9 +9,7 @@
 不能直接依赖 OpenAI SDK 返回的数据结构。
 """
 
-from calendar import c
 import json
-from operator import call
 import time
 from typing import Any, Protocol
 
@@ -22,7 +20,6 @@ from openai import (
     OpenAI,
     RateLimitError,
 )
-from sympy import li
 
 from patchpilot.schemas import ModelResponse, Message, ToolCall
 
@@ -100,7 +97,7 @@ class OpenAIClient:
                 time.sleep(delay)
 
             except APIStatusError as error:
-                raise ModelError(f"模型请求失败，HTTP 状态码: {error.http_status}") from error
+                raise ModelError(f"模型请求失败，HTTP 状态码: {error.status_code}") from error
 
         raise ModelError("模型请求失败")
 
@@ -117,7 +114,7 @@ class OpenAIClient:
             encoded["tool_calls"] = [
                 {
                     "id": call.id,
-                    "type": function,
+                    "type": "function",
                     "function": {
                         "name": call.name,
                         "arguments": json.dumps(

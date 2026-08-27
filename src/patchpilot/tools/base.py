@@ -12,7 +12,6 @@ ToolRegistry 负责工具查找、统一异常处理和结果截断。
 from abc import ABC, abstractmethod
 from typing import Any
 
-from sqlalchemy import desc
 
 from patchpilot.schemas import ToolCall, ToolResult
 
@@ -62,7 +61,7 @@ class ToolRegistry:
             self._tools[tool.name] = tool
 
 
-    def definition(self) -> list[dict[str, Any]]:
+    def definitions(self) -> list[dict[str, Any]]:
         """生成发送给模型的所有工具定义"""
         return [tool.definition() for tool in self._tools.values()]
 
