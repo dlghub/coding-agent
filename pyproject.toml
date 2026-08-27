@@ -17,6 +17,9 @@ dependencies = [
     "typer>=0.12,<1",
 ]
 
+[project.scripts]
+patchpilot = "patchpilot.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9",
