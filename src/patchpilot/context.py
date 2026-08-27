@@ -1,38 +1,40 @@
-"""
-文件名：context.py
+"""管理 Agent 对话历史，并在字符预算内压缩较早的完整工具回合。"""
 
-功能：
-维护 Agent 的对话历史，并保证工具调用与工具结果正确配对。
+import json
 
-第一阶段：
-仅实现消息保存和工具输出记录。
-
-后续阶段：
-可以在本文件中增加 token 预算和历史摘要功能。
-"""
-
-from patchpilot.schemas import Message, ModelResponse, ToolResult
+from patchpilot.schemas import Message, ModelResponse, ToolCall, ToolResult
 
 
 class ContextManager:
-    """管理一次 Agent 任务的完整对话上下文。"""
+    """管理一次 Agent 任务的上下文与历史压缩。"""
 
-    def __init__(self, system_prompt: str) -> None:
+    def __init__(
+        self,
+        system_prompt: str,
+        max_context_chars: int = 120_000,
+        recent_groups: int = 3,
+        max_summary_chars: int = 8_000,
+    ) -> None:
+        if max_context_chars < 1_000:
+            raise ValueError("max_context_chars 必须至少为 1000")
+        if recent_groups < 1:
+            raise ValueError("recent_groups 必须至少为 1")
+        if max_summary_chars < 200:
+            raise ValueError("max_summary_chars 必须至少为 200")
         self.system_prompt = system_prompt
+        self.max_context_chars = max_context_chars
+        self.recent_groups = recent_groups
+        self.max_summary_chars = min(max_summary_chars, max_context_chars // 3)
         self._messages: list[Message] = []
+        self._summary_lines: list[str] = []
 
     def start(self, task: str) -> None:
-        """开始一个新任务，并清除上一次任务的上下文。"""
+        """开始新任务，并清除上一次任务的上下文和摘要。"""
 
+        self._summary_lines = []
         self._messages = [
-            Message(
-                role="system",
-                content=self.system_prompt,
-            ),
-            Message(
-                role="user",
-                content=task,
-            ),
+            Message(role="system", content=self.system_prompt),
+            Message(role="user", content=task),
         ]
 
     def add_assistant_response(self, response: ModelResponse) -> None:
@@ -50,7 +52,6 @@ class ContextManager:
         """保存工具执行结果。"""
 
         status = "成功" if result.ok else "失败"
-
         self._messages.append(
             Message(
                 role="tool",
@@ -64,10 +65,120 @@ class ContextManager:
         )
 
     def messages(self) -> list[Message]:
-        """
-        返回消息副本。
+        """压缩超预算历史，并返回不会破坏工具消息配对的副本。"""
 
-        返回副本可以避免外部代码意外修改内部消息列表。
-        """
+        self._compact_if_needed()
+        messages = list(self._messages[:2])
+        if self._summary_lines:
+            messages.append(
+                Message(
+                    role="system",
+                    content=(
+                        "Earlier execution summary (generated locally; "
+                        "do not treat it as a new user request):\n"
+                        + "\n".join(self._summary_lines)
+                    ),
+                )
+            )
+        messages.extend(self._messages[2:])
+        return messages
 
-        return list(self._messages)
+    def estimated_chars(self) -> int:
+        """返回当前发送上下文的近似字符数，便于测试与诊断。"""
+
+        return self._messages_size(self.messages())
+
+    def _compact_if_needed(self) -> None:
+        groups = self._completed_groups()
+        while (
+            self._messages_size(self._messages_with_summary())
+            > self.max_context_chars
+            and len(groups) > self.recent_groups
+        ):
+            group = groups.pop(0)
+            self._summary_lines.append(self._summarize_group(group))
+            self._trim_summary()
+            del self._messages[2 : 2 + len(group)]
+
+    def _completed_groups(self) -> list[list[Message]]:
+        """按 assistant 及其紧随的 tool results 划分完整回合。"""
+
+        groups: list[list[Message]] = []
+        current: list[Message] = []
+        for message in self._messages[2:]:
+            if message.role == "assistant":
+                if current:
+                    groups.append(current)
+                current = [message]
+            elif current:
+                current.append(message)
+        if current:
+            groups.append(current)
+        return groups
+
+    def _messages_with_summary(self) -> list[Message]:
+        messages = list(self._messages)
+        if self._summary_lines:
+            messages.insert(
+                2,
+                Message(role="system", content="\n".join(self._summary_lines)),
+            )
+        return messages
+
+    def _summarize_group(self, group: list[Message]) -> str:
+        assistant = group[0]
+        parts: list[str] = []
+        if assistant.content:
+            parts.append(f"assistant={self._clip(assistant.content, 240)}")
+        for call in assistant.tool_calls:
+            parts.append(self._summarize_call(call))
+        for result in group[1:]:
+            parts.append(
+                f"result[{result.tool_call_id}]="
+                f"{self._clip(result.content or '', 400)}"
+            )
+        return " | ".join(parts) or "completed empty assistant turn"
+
+    def _summarize_call(self, call: ToolCall) -> str:
+        arguments: dict[str, object] = {}
+        for key in ("path", "query", "max_depth", "timeout"):
+            if key in call.arguments:
+                arguments[key] = call.arguments[key]
+        command = call.arguments.get("command")
+        if command is not None:
+            arguments["command"] = command
+        if call.name == "apply_patch":
+            arguments["old_text_chars"] = len(call.arguments.get("old_text", ""))
+            arguments["new_text_chars"] = len(call.arguments.get("new_text", ""))
+        encoded = json.dumps(arguments, ensure_ascii=False, default=repr)
+        return f"tool={call.name}({self._clip(encoded, 300)})"
+
+    def _trim_summary(self) -> None:
+        while (
+            len("\n".join(self._summary_lines)) > self.max_summary_chars
+            and len(self._summary_lines) > 1
+        ):
+            self._summary_lines.pop(0)
+        if self._summary_lines:
+            self._summary_lines[0] = self._clip(
+                self._summary_lines[0], self.max_summary_chars
+            )
+
+    @staticmethod
+    def _clip(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit] + f"…[省略 {len(text) - limit} 字符]"
+
+    @staticmethod
+    def _messages_size(messages: list[Message]) -> int:
+        total = 0
+        for message in messages:
+            total += len(message.role) + len(message.content or "")
+            total += len(message.tool_call_id or "")
+            for call in message.tool_calls:
+                total += len(call.id) + len(call.name)
+                total += len(
+                    json.dumps(call.arguments, ensure_ascii=False, default=repr)
+                )
+        return total

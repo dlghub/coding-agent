@@ -13,7 +13,7 @@ from patchpilot.cli import (
     configuration_path,
     ensure_config_outside_writable_workspace,
 )
-from patchpilot.config import ConfigurationError
+from patchpilot.config import ConfigurationError, Settings
 from patchpilot.workspace import Workspace
 
 
@@ -42,3 +42,22 @@ def test_read_only_mode_allows_broad_workspace(tmp_path: Path) -> None:
     config.parent.mkdir(parents=True)
     config.write_text("AGENT_API_KEY=secret\n", encoding="utf-8")
     ensure_config_outside_writable_workspace(config, Workspace(tmp_path), True)
+
+
+def test_settings_reads_context_budget(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "secret")
+    monkeypatch.setenv("AGENT_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("AGENT_MODEL", "test-model")
+    monkeypatch.setenv("AGENT_MAX_CONTEXT_CHARS", "64000")
+
+    assert Settings.from_env().max_context_chars == 64_000
+
+
+def test_settings_rejects_too_small_context_budget(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "secret")
+    monkeypatch.setenv("AGENT_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("AGENT_MODEL", "test-model")
+    monkeypatch.setenv("AGENT_MAX_CONTEXT_CHARS", "9999")
+
+    with pytest.raises(ConfigurationError, match="至少为 10000"):
+        Settings.from_env()

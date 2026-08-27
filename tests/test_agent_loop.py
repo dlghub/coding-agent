@@ -121,6 +121,101 @@ def test_tool_exception_does_not_crash_agent() -> None:
     assert "模拟错误" in (model.calls[1][-1].content or "")
 
 
+def test_agent_does_not_reexecute_identical_failed_call() -> None:
+    class CountingFailingTool(RecordingTool):
+        name = "fail"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.execution_count = 0
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            self.execution_count += 1
+            raise RuntimeError("参数无效")
+
+    tool = CountingFailingTool()
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall("fail-1", "fail", {"value": "same"})]
+            ),
+            ModelResponse(
+                tool_calls=[ToolCall("fail-2", "fail", {"value": "same"})]
+            ),
+            ModelResponse(content="已改用其他方案。"),
+        ]
+    )
+
+    answer = make_agent(model, tool).run("测试重复失败调用")
+
+    assert answer == "已改用其他方案。"
+    assert tool.execution_count == 1
+    duplicate_message = model.calls[2][-1].content or ""
+    assert "完全相同" in duplicate_message
+    assert "本次未再次执行" in duplicate_message
+    assert "参数无效" in duplicate_message
+
+
+def test_agent_executes_changed_call_after_failure() -> None:
+    class FailsForBadValue(RecordingTool):
+        name = "sometimes_fail"
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            self.received.append(arguments)
+            if arguments["value"] == "bad":
+                raise RuntimeError("参数无效")
+            return "ok"
+
+    tool = FailsForBadValue()
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("call-1", "sometimes_fail", {"value": "bad"})
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("call-2", "sometimes_fail", {"value": "good"})
+                ]
+            ),
+            ModelResponse(content="修正完成。"),
+        ]
+    )
+
+    assert make_agent(model, tool).run("修正参数") == "修正完成。"
+    assert tool.received == [{"value": "bad"}, {"value": "good"}]
+
+
+def test_repeated_failure_count_increases_without_reexecution() -> None:
+    class CountingFailingTool(RecordingTool):
+        name = "always_fail"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.execution_count = 0
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            self.execution_count += 1
+            raise RuntimeError("始终失败")
+
+    tool = CountingFailingTool()
+    repeated_calls = [
+        ModelResponse(
+            tool_calls=[
+                ToolCall(f"call-{index}", "always_fail", {"value": "x"})
+            ]
+        )
+        for index in range(1, 4)
+    ]
+    model = FakeModelClient([*repeated_calls, ModelResponse(content="停止重复。")])
+
+    make_agent(model, tool).run("测试重复计数")
+
+    assert tool.execution_count == 1
+    assert "第 3 次" in (model.calls[3][-1].content or "")
+
+
 def test_agent_stops_at_max_steps() -> None:
     tool = RecordingTool()
     model = FakeModelClient(

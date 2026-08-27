@@ -30,6 +30,7 @@ class Settings:
     timeout: float = 60.0
     max_steps: int = 20
     max_tool_output: int = 20_000
+    max_context_chars: int = 120_000
 
 
     @classmethod
@@ -53,9 +54,13 @@ class Settings:
         try:
             timeout = float(os.getenv("AGENT_TIMEOUT", "60"))
             max_steps = int(os.getenv("AGENT_MAX_STEPS", "20"))
+            max_context_chars = int(
+                os.getenv("AGENT_MAX_CONTEXT_CHARS", "120000")
+            )
         except ValueError as error:
             raise ConfigurationError(
-                "AGENT_TIMEOUT 或 AGENT_MAX_STEPS 格式不正确"
+                "AGENT_TIMEOUT、AGENT_MAX_STEPS 或 "
+                "AGENT_MAX_CONTEXT_CHARS 格式不正确"
             ) from error
 
         if timeout <= 0:
@@ -64,11 +69,17 @@ class Settings:
         if max_steps <= 0:
             raise ConfigurationError("AGENT_MAX_STEPS 必须大于 0")
 
+        if max_context_chars < 10_000:
+            raise ConfigurationError(
+                "AGENT_MAX_CONTEXT_CHARS 必须至少为 10000"
+            )
+
         return cls(
             api_key=api_key,
             base_url=base_url.rstrip("/"),
             model=model,
             timeout=timeout,
             max_steps=max_steps,
+            max_context_chars=max_context_chars,
 
         )

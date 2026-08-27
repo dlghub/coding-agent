@@ -155,7 +155,10 @@ def run(
         )
         agent = Agent(
             model=model,
-            context=ContextManager(SYSTEM_PROMPT),
+            context=ContextManager(
+                SYSTEM_PROMPT,
+                max_context_chars=settings.max_context_chars,
+            ),
             tools=registry,
             events=event_sink,
             max_steps=max_steps or settings.max_steps,
