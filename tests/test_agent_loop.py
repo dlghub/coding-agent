@@ -14,6 +14,7 @@ from patchpilot.agent import Agent, MaxStepsExceeded
 from patchpilot.checkpoint import AgentState
 from patchpilot.context import ContextManager
 from patchpilot.events import NullEventSink
+from patchpilot.git_review import GitReview
 from patchpilot.schemas import Message, ModelResponse, ToolCall
 from patchpilot.tools.base import Tool, ToolRegistry
 
@@ -455,3 +456,25 @@ def test_summary_uses_latest_verification_after_change() -> None:
     assert agent.last_summary is not None
     assert agent.last_summary.status == "partial"
     assert agent.last_summary.verification_current is False
+
+
+def test_git_diff_check_failure_downgrades_claimed_completion() -> None:
+    model = FakeModelClient([ModelResponse(content="全部完成。")])
+    agent = Agent(
+        model=model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([]),
+        events=NullEventSink(),
+        git_review_callback=lambda: GitReview(
+            available=True,
+            status_lines=[" M app.py"],
+            diff_stat="app.py | 1 +",
+            diff_check_passed=False,
+        ),
+    )
+
+    agent.run("检查项目")
+
+    assert agent.last_summary is not None
+    assert agent.last_summary.status == "partial"
+    assert "diff --check" in agent.last_summary.warnings[0]

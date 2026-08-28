@@ -19,6 +19,7 @@ from patchpilot.checkpoint import CheckpointError, CheckpointStore
 from patchpilot.config import ConfigurationError, Settings
 from patchpilot.context import ContextManager
 from patchpilot.events import CompositeEventSink, JsonlEventSink, RichEventSink
+from patchpilot.git_review import GitInspector
 from patchpilot.model import ModelError, OpenAIClient
 from patchpilot.prompts import SYSTEM_PROMPT
 from patchpilot.tools import (
@@ -176,6 +177,7 @@ def run(
             checkpoint_callback=(
                 checkpoint_store.save if checkpoint_store is not None else None
             ),
+            git_review_callback=GitInspector(safe_workspace.root).inspect,
         )
         agent.run(task)
         if checkpoint_store is not None:
@@ -268,6 +270,7 @@ def resume(
             events=event_sink,
             max_steps=max_steps or settings.max_steps,
             checkpoint_callback=new_store.save if new_store else None,
+            git_review_callback=GitInspector(safe_workspace.root).inspect,
         )
         agent.resume(checkpoint.state)
         source_store.remove()

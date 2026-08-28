@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from patchpilot.schemas import ToolCall, ToolResult
+from patchpilot.git_review import GitReview
 
 
 RunStatus = Literal["completed", "partial", "failed"]
@@ -30,6 +31,7 @@ class RunSummary:
     verifications: list[VerificationEvidence] = field(default_factory=list)
     verification_current: bool | None = None
     warnings: list[str] = field(default_factory=list)
+    git_review: GitReview | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -91,6 +93,7 @@ class EvidenceCollector:
         self,
         forced_status: RunStatus | None = None,
         extra_warning: str | None = None,
+        git_review: GitReview | None = None,
     ) -> RunSummary:
         changed_files = list(dict.fromkeys(path for _, path in self._changes))
         warnings: list[str] = []
@@ -116,8 +119,15 @@ class EvidenceCollector:
         if extra_warning:
             warnings.append(extra_warning)
 
+        if git_review and git_review.error:
+            warnings.append(git_review.error)
+        if git_review and git_review.diff_check_passed is False:
+            warnings.append("git diff --check 未通过，补丁包含格式问题。")
+
         if forced_status is not None:
             status = forced_status
+        elif git_review and git_review.diff_check_passed is False:
+            status = "partial"
         elif self._changes and not verification_current:
             status = "partial"
         elif self._verifications and not self._verifications[-1].passed:
@@ -131,6 +141,7 @@ class EvidenceCollector:
             verifications=list(self._verifications),
             verification_current=verification_current,
             warnings=warnings,
+            git_review=git_review,
         )
 
     @staticmethod

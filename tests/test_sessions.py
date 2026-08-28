@@ -4,6 +4,7 @@ import json
 import stat
 
 from patchpilot.events import JsonlEventSink
+from patchpilot.git_review import GitReview
 from patchpilot.outcome import RunSummary, VerificationEvidence
 from patchpilot.schemas import ToolCall, ToolResult
 
@@ -28,6 +29,12 @@ def test_session_log_records_events_and_redacts_patch_text(tmp_path) -> None:
                 VerificationEvidence(["python", "-m", "pytest"], True, 2)
             ],
             verification_current=True,
+            git_review=GitReview(
+                available=True,
+                status_lines=[" M a.py"],
+                diff_stat="a.py | 1 +",
+                diff_check_passed=True,
+            ),
         )
     )
 
@@ -44,3 +51,4 @@ def test_session_log_records_events_and_redacts_patch_text(tmp_path) -> None:
     assert stat.S_IMODE(sink.directory.stat().st_mode) == 0o700
     assert records[-1]["status"] == "completed"
     assert records[-1]["verifications"][0]["passed"] is True
+    assert records[-1]["git_review"]["diff_check_passed"] is True

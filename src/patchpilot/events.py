@@ -239,3 +239,16 @@ class RichEventSink:
             self.console.print("验证命令：未运行")
         for warning in summary.warnings:
             self.console.print(f"警告：{warning}", style="yellow", markup=False)
+        review = summary.git_review
+        if review and review.available:
+            self.console.print("Git 工作树：")
+            if review.status_lines:
+                for line in review.status_lines:
+                    self.console.print(f"  {line}", markup=False)
+            else:
+                self.console.print("  clean")
+            if review.diff_stat:
+                self.console.print(review.diff_stat, style="dim", markup=False)
+            if review.diff_check_passed is not None:
+                symbol = "✓" if review.diff_check_passed else "✗"
+                self.console.print(f"{symbol} git diff --check", markup=False)

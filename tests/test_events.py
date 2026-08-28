@@ -10,6 +10,7 @@ from io import StringIO
 from rich.console import Console
 
 from patchpilot.events import RichEventSink
+from patchpilot.git_review import GitReview
 from patchpilot.outcome import RunSummary, VerificationEvidence
 from patchpilot.schemas import ToolCall, ToolResult
 
@@ -41,6 +42,12 @@ def test_run_summary_renders_evidence() -> None:
         ],
         verification_current=False,
         warnings=["最后一次修改之后没有成功的验证记录。"],
+        git_review=GitReview(
+            available=True,
+            status_lines=[" M app.py", "?? new.py"],
+            diff_stat="app.py | 2 +−",
+            diff_check_passed=False,
+        ),
     )
 
     sink.run_summary(summary)
@@ -50,3 +57,5 @@ def test_run_summary_renders_evidence() -> None:
     assert "app.py" in output
     assert "python -m pytest -q" in output
     assert "警告" in output
+    assert "?? new.py" in output
+    assert "git diff --check" in output

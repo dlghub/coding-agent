@@ -11,6 +11,7 @@ from collections.abc import Callable
 from patchpilot.checkpoint import AgentState
 from patchpilot.context import ContextManager
 from patchpilot.events import EventSink, NullEventSink
+from patchpilot.git_review import GitReview
 from patchpilot.model import ModelClient
 from patchpilot.outcome import EvidenceCollector, RunSummary
 from patchpilot.schemas import ToolCall, ToolResult
@@ -32,6 +33,7 @@ class Agent:
         events: EventSink | None = None,
         max_steps: int = 20,
         checkpoint_callback: Callable[[AgentState], None] | None = None,
+        git_review_callback: Callable[[], GitReview] | None = None,
     ) -> None:
         if max_steps <= 0:
             raise ValueError("max_steps 必须大于 0")
@@ -41,6 +43,7 @@ class Agent:
         self.events = events or NullEventSink()
         self.max_steps = max_steps
         self.checkpoint_callback = checkpoint_callback
+        self.git_review_callback = git_review_callback
         self.last_summary: RunSummary | None = None
 
     def run(self, task: str) -> str:
@@ -121,7 +124,9 @@ class Agent:
             if response.content and response.content.strip():
                 answer = response.content.strip()
                 self.events.agent_finished(answer)
-                self.last_summary = evidence.build()
+                self.last_summary = evidence.build(
+                    git_review=self._collect_git_review()
+                )
                 self.events.run_summary(self.last_summary)
                 return answer
 
@@ -131,9 +136,15 @@ class Agent:
         self.last_summary = evidence.build(
             forced_status="failed",
             extra_warning=message,
+            git_review=self._collect_git_review(),
         )
         self.events.run_summary(self.last_summary)
         raise MaxStepsExceeded(message)
+
+    def _collect_git_review(self) -> GitReview | None:
+        if self.git_review_callback is None:
+            return None
+        return self.git_review_callback()
 
     def _save_checkpoint(
         self,
