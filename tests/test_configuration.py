@@ -61,3 +61,26 @@ def test_settings_rejects_too_small_context_budget(monkeypatch) -> None:
 
     with pytest.raises(ConfigurationError, match="至少为 10000"):
         Settings.from_env()
+
+
+def test_settings_defaults_to_docker_sandbox(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "secret")
+    monkeypatch.setenv("AGENT_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("AGENT_MODEL", "test-model")
+    monkeypatch.delenv("AGENT_SANDBOX_MODE", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_IMAGE", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.sandbox_mode == "docker"
+    assert settings.sandbox_image == "ubuntu:22.04"
+
+
+def test_settings_rejects_unknown_sandbox_mode(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "secret")
+    monkeypatch.setenv("AGENT_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("AGENT_MODEL", "test-model")
+    monkeypatch.setenv("AGENT_SANDBOX_MODE", "magic")
+
+    with pytest.raises(ConfigurationError, match="docker 或 host"):
+        Settings.from_env()

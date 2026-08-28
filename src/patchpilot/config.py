@@ -31,6 +31,8 @@ class Settings:
     max_steps: int = 20
     max_tool_output: int = 20_000
     max_context_chars: int = 120_000
+    sandbox_mode: str = "docker"
+    sandbox_image: str = "ubuntu:22.04"
 
 
     @classmethod
@@ -41,6 +43,10 @@ class Settings:
         api_key = os.getenv("AGENT_API_KEY", "").strip()
         base_url = os.getenv("AGENT_BASE_URL", "").strip()
         model = os.getenv("AGENT_MODEL", "").strip()
+        sandbox_mode = os.getenv("AGENT_SANDBOX_MODE", "docker").strip().lower()
+        sandbox_image = os.getenv(
+            "AGENT_SANDBOX_IMAGE", "ubuntu:22.04"
+        ).strip()
 
         if not api_key:
             raise ConfigurationError("缺少环境变量 AGENT_API_KEY")
@@ -74,6 +80,13 @@ class Settings:
                 "AGENT_MAX_CONTEXT_CHARS 必须至少为 10000"
             )
 
+        if sandbox_mode not in {"docker", "host"}:
+            raise ConfigurationError(
+                "AGENT_SANDBOX_MODE 必须是 docker 或 host"
+            )
+        if not sandbox_image:
+            raise ConfigurationError("AGENT_SANDBOX_IMAGE 不能为空")
+
         return cls(
             api_key=api_key,
             base_url=base_url.rstrip("/"),
@@ -81,5 +94,7 @@ class Settings:
             timeout=timeout,
             max_steps=max_steps,
             max_context_chars=max_context_chars,
+            sandbox_mode=sandbox_mode,
+            sandbox_image=sandbox_image,
 
         )

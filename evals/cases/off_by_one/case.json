@@ -1,0 +1,5 @@
+{
+  "name": "off-by-one",
+  "task": "修复 range_utils.py 中的边界错误。先运行测试定位问题，只做必要修改，最后重新运行全部测试。",
+  "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
+}

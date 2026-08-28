@@ -6,6 +6,12 @@
 """
 
 import os
+import json
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +25,14 @@ from patchpilot.checkpoint import CheckpointError, CheckpointStore
 from patchpilot.config import ConfigurationError, Settings
 from patchpilot.context import ContextManager
 from patchpilot.events import CompositeEventSink, JsonlEventSink, RichEventSink
+from patchpilot.evaluation import (
+    AgentExecution,
+    CommandExecution,
+    EvaluationError,
+    EvaluationRunner,
+    metrics_from_output,
+    output_tail,
+)
 from patchpilot.git_review import GitInspector
 from patchpilot.model import ModelError, OpenAIClient
 from patchpilot.prompts import SYSTEM_PROMPT
@@ -60,14 +74,28 @@ def load_configuration() -> Path:
     return path
 
 
-def build_tools(workspace: Workspace, read_only: bool) -> list[Tool]:
+def build_tools(
+    workspace: Workspace,
+    read_only: bool,
+    sandbox_mode: str = "host",
+    sandbox_image: str = "ubuntu:22.04",
+) -> list[Tool]:
     tools: list[Tool] = [
         ListFilesTool(workspace),
         ReadFileTool(workspace),
         SearchTextTool(workspace),
     ]
     if not read_only:
-        tools.extend([ApplyPatchTool(workspace), RunCommandTool(workspace)])
+        tools.extend(
+            [
+                ApplyPatchTool(workspace),
+                RunCommandTool(
+                    workspace,
+                    sandbox_mode=sandbox_mode,
+                    sandbox_image=sandbox_image,
+                ),
+            ]
+        )
     return tools
 
 
@@ -139,7 +167,12 @@ def run(
 
         approval = InteractiveApproval(confirm_action, auto_approve=yes)
         registry = ToolRegistry(
-            build_tools(safe_workspace, read_only),
+            build_tools(
+                safe_workspace,
+                read_only,
+                settings.sandbox_mode,
+                settings.sandbox_image,
+            ),
             max_output_chars=settings.max_tool_output,
             approval=approval,
         )
@@ -231,7 +264,12 @@ def resume(
         )
         approval = InteractiveApproval(confirm_action, auto_approve=yes)
         registry = ToolRegistry(
-            build_tools(safe_workspace, checkpoint.read_only),
+            build_tools(
+                safe_workspace,
+                checkpoint.read_only,
+                settings.sandbox_mode,
+                settings.sandbox_image,
+            ),
             max_output_chars=settings.max_tool_output,
             approval=approval,
         )
@@ -288,6 +326,124 @@ def resume(
     except KeyboardInterrupt:
         console.print("\n[yellow]任务已由用户中断，恢复点已保留。[/yellow]")
         raise typer.Exit(code=130)
+
+
+@app.command("eval")
+def evaluate(
+    cases: Path = typer.Option(
+        Path("evals/cases"), "--cases",
+        help="包含评测 case 子目录的路径。",
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True,
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="JSON 报告路径。"
+    ),
+    max_steps: int = typer.Option(
+        20, "--max-steps", min=1, max=100,
+        help="每个评测任务的最大 Agent 步数。",
+    ),
+    case_timeout: int = typer.Option(
+        900, "--case-timeout", min=30, max=3600,
+        help="每个 Agent 子进程的总超时秒数。",
+    ),
+    keep_workspaces: bool = typer.Option(
+        False, "--keep-workspaces",
+        help="保留复制后的评测工作区用于排查。",
+    ),
+) -> None:
+    """运行会调用真实模型的端到端编码修复评测。"""
+
+    try:
+        load_configuration()
+        settings = Settings.from_env()
+
+        def execute_command(command: list[str], workspace: Path) -> CommandExecution:
+            tool = RunCommandTool(
+                Workspace(workspace),
+                sandbox_mode=settings.sandbox_mode,
+                sandbox_image=settings.sandbox_image,
+            )
+            result = tool.execute({"command": command, "timeout": 300})
+            match = re.search(r"退出码：(-?\d+)", result)
+            return CommandExecution(
+                passed=bool(match and int(match.group(1)) == 0),
+                output_tail=output_tail(result),
+            )
+
+        def execute_agent(task: str, workspace: Path) -> AgentExecution:
+            command = [
+                sys.executable,
+                "-m",
+                "patchpilot.cli",
+                "run",
+                task,
+                "--workspace",
+                str(workspace),
+                "--max-steps",
+                str(max_steps),
+                "--yes",
+                "--no-log",
+            ]
+            started = time.monotonic()
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    timeout=case_timeout,
+                    check=False,
+                )
+                combined = completed.stdout + "\n" + completed.stderr
+                returncode = completed.returncode
+            except subprocess.TimeoutExpired as error:
+                stdout = error.stdout.decode() if isinstance(error.stdout, bytes) else error.stdout
+                stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr
+                combined = (stdout or "") + "\n" + (stderr or "")
+                returncode = 124
+            steps, tool_calls = metrics_from_output(combined)
+            return AgentExecution(
+                returncode=returncode,
+                duration_seconds=time.monotonic() - started,
+                steps=steps,
+                tool_calls=tool_calls,
+                output_tail=output_tail(combined),
+            )
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        report_path = output or Path("eval-results") / f"{timestamp}.json"
+        work_root = report_path.parent / "workspaces" / timestamp
+        runner = EvaluationRunner(
+            execute_agent,
+            execute_command,
+            keep_workspaces=keep_workspaces,
+            work_root=work_root,
+        )
+        report = runner.run(cases)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        console.print(
+            f"评测完成：{report.passed}/{report.total}，"
+            f"成功率 {report.success_rate:.1%}"
+        )
+        for result in report.results:
+            symbol = "✓" if result.success else "✗"
+            console.print(
+                f"{symbol} {result.name}: steps={result.steps}, "
+                f"tools={result.tool_calls}, {result.duration_seconds:.2f}s",
+                markup=False,
+            )
+        console.print(f"报告：{report_path.resolve()}", markup=False)
+        if report.passed != report.total:
+            raise typer.Exit(code=5)
+    except (ConfigurationError, EvaluationError, ValueError) as error:
+        console.print(f"[red]评测失败：{error}[/red]")
+        raise typer.Exit(code=2) from error
 
 
 def main() -> None:

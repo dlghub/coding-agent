@@ -24,6 +24,7 @@ dist/
 # Agent 运行记录可能包含代码或敏感信息
 logs/
 sessions/
+eval-results/
 
 # 编辑器配置
 .vscode/

@@ -1,0 +1,5 @@
+{
+  "name": "slugify-todo",
+  "task": "实现 text_utils.py 中尚未完成的 slugify 函数。阅读测试明确行为，保持实现简洁且只使用标准库，最后运行全部测试。",
+  "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
+}

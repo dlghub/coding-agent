@@ -17,10 +17,12 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from patchpilot.tools.base import Tool, ToolError
+from patchpilot.sandbox import DockerSandbox
 from patchpilot.workspace import Workspace
 
 
@@ -101,11 +103,25 @@ class RunCommandTool(Tool):
         default_timeout: int = 60,
         max_timeout: int = 300,
         max_output_chars: int = 20_000,
+        sandbox_mode: str = "host",
+        sandbox_image: str = "ubuntu:22.04",
     ) -> None:
         self.workspace = workspace
         self.default_timeout = default_timeout
         self.max_timeout = max_timeout
         self.max_output_chars = max_output_chars
+        if sandbox_mode not in {"docker", "host"}:
+            raise ValueError("sandbox_mode 必须是 docker 或 host")
+        self.sandbox_mode = sandbox_mode
+        self.sandbox = (
+            DockerSandbox(
+                workspace.root,
+                image=sandbox_image,
+                runtime_prefix=Path(sys.prefix),
+            )
+            if sandbox_mode == "docker"
+            else None
+        )
 
     def execute(self, arguments: dict[str, Any]) -> str:
         """校验并执行命令，返回退出码和输出。"""
@@ -115,9 +131,11 @@ class RunCommandTool(Tool):
 
         self._check_command_policy(command)
 
+        invocation = self.sandbox.wrap(command) if self.sandbox else None
+        execution_command = invocation.command if invocation else command
         try:
             completed = subprocess.run(
-                command,
+                execution_command,
 
                 # 始终固定在工作区运行
                 cwd=self.workspace.root,
@@ -137,6 +155,8 @@ class RunCommandTool(Tool):
                 env=self._safe_environment(),
             )
         except subprocess.TimeoutExpired as error:
+            if invocation is not None:
+                self._cleanup_container(invocation.container_name)
             stdout = self._normalise_timeout_output(error.stdout)
             stderr = self._normalise_timeout_output(error.stderr)
 
@@ -149,7 +169,8 @@ class RunCommandTool(Tool):
                 timeout=timeout,
             )
         except FileNotFoundError as error:
-            raise ToolError(f"找不到可执行程序：{command[0]}") from error
+            missing = "docker" if invocation is not None else command[0]
+            raise ToolError(f"找不到可执行程序：{missing}") from error
         except PermissionError as error:
             raise ToolError(f"没有权限执行程序：{command[0]}") from error
         except OSError as error:
@@ -163,6 +184,21 @@ class RunCommandTool(Tool):
             timed_out=False,
             timeout=timeout,
         )
+
+    def _cleanup_container(self, container_name: str) -> None:
+        """命令超时后清理本次调用的精确容器，不使用 shell。"""
+
+        try:
+            subprocess.run(
+                DockerSandbox.cleanup_command(container_name),
+                capture_output=True,
+                shell=False,
+                timeout=5,
+                check=False,
+                env=self._safe_environment(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def _validate_command(self, value: Any) -> list[str]:
         """确认 command 是非空字符串数组，并容错 JSON 数组字符串。"""

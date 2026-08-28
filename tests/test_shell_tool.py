@@ -6,6 +6,8 @@
 """
 
 import sys
+import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -177,3 +179,48 @@ def test_run_command_does_not_expose_agent_api_key(
 
     assert "should-not-be-visible" not in output
     assert "missing" in output
+
+
+def test_run_command_uses_docker_sandbox_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="sandboxed\n", stderr="")
+
+    monkeypatch.setattr("patchpilot.tools.shell.subprocess.run", fake_run)
+    tool = RunCommandTool(Workspace(tmp_path), sandbox_mode="docker")
+
+    output = tool.execute({"command": ["python", "--version"]})
+
+    command, kwargs = captured[0]
+    assert command[:2] == ["docker", "run"]
+    assert "--network" in command and "none" in command
+    assert "--read-only" in command
+    assert kwargs["shell"] is False
+    assert "sandboxed" in output
+
+
+def test_docker_timeout_cleans_up_exact_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append(command)
+        if command[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(command, 1)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("patchpilot.tools.shell.subprocess.run", fake_run)
+    tool = RunCommandTool(Workspace(tmp_path), sandbox_mode="docker")
+
+    output = tool.execute({"command": ["python", "--version"], "timeout": 1})
+
+    container_name = captured[0][captured[0].index("--name") + 1]
+    assert captured[1] == ["docker", "rm", "-f", container_name]
+    assert "状态：超时" in output
