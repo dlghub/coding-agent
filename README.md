@@ -19,6 +19,7 @@ OpenAI-compatible Chat Completions 接口进行 Tool Calling，自行管理模�
 - 字符预算驱动的历史压缩，保留最近完整 assistant/tool 回合
 - 权限受限的 JSONL 日志与异常退出 checkpoint
 - `patchpilot resume` 跨进程继续任务
+- `patchpilot chat` 启动一次后持续输入多轮需求
 - 基于真实工具记录的完成状态、测试证据和 Git 工作树审查
 - Docker 命令沙箱：禁网、只读根文件系统和资源限制
 - `patchpilot eval` 端到端编码修复评测
@@ -26,7 +27,7 @@ OpenAI-compatible Chat Completions 接口进行 Tool Calling，自行管理模�
 ## 架构
 
 ```text
-CLI (run / resume / eval)
+CLI (run / chat / resume / eval)
 │
 ├── Configuration ── 外置 .env、超时、上下文与沙箱配置
 ├── Model Client ─── OpenAI-compatible 适配、协议校验与重试
@@ -76,6 +77,7 @@ python -m pip install -e ".[dev]"
 ```bash
 patchpilot --help
 patchpilot run --help
+patchpilot chat --help
 patchpilot resume --help
 patchpilot eval --help
 ```
@@ -112,6 +114,40 @@ export PATCHPILOT_CONFIG=/absolute/path/to/patchpilot.env
 完整模式会拒绝位于可写 workspace 内部的配置文件，避免 Agent 读取或修改自己的密钥。
 
 ## 基本使用
+
+### 持续对话模式
+
+只启动一次，之后直接逐轮输入需求：
+
+```bash
+patchpilot chat --workspace ~/target-project
+```
+
+```text
+你 > 检查项目结构并总结功能
+你 > 运行测试并修复失败
+你 > 再补一个边界测试
+你 > /exit
+```
+
+后续输入会复用之前的对话上下文，但每轮重新收集修改、测试和 Git 证据。可用命令：
+
+```text
+/help          显示帮助
+/status        显示工作区、模型、审批和上下文预算
+/new           立即清空上下文，开始新对话
+/history       显示本次终端会话的输入历史
+/yes on|off    动态切换普通操作自动审批
+/clear         清屏
+/exit          退出
+```
+
+启动时也可以固定只读或自动审批：
+
+```bash
+patchpilot chat --workspace ~/target-project --read-only
+patchpilot chat --workspace ~/target-project --yes
+```
 
 ### 只读分析
 
@@ -244,7 +280,8 @@ src/patchpilot/
 ├── agent.py          # Agent 主循环、重复失败检测、恢复入口
 ├── approvals.py      # 用户审批策略
 ├── checkpoint.py     # 原子 checkpoint 持久化
-├── cli.py            # run / resume / eval 命令
+├── chat.py           # 多轮终端对话与斜杠命令
+├── cli.py            # run / chat / resume / eval 命令
 ├── config.py         # 外置环境配置
 ├── context.py        # 上下文预算与历史压缩
 ├── evaluation.py     # 端到端评测框架

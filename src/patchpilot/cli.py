@@ -22,6 +22,7 @@ from rich.console import Console
 from patchpilot.agent import Agent, MaxStepsExceeded
 from patchpilot.approvals import InteractiveApproval
 from patchpilot.checkpoint import CheckpointError, CheckpointStore
+from patchpilot.chat import ChatSession
 from patchpilot.config import ConfigurationError, Settings
 from patchpilot.context import ContextManager
 from patchpilot.events import CompositeEventSink, JsonlEventSink, RichEventSink
@@ -326,6 +327,110 @@ def resume(
     except KeyboardInterrupt:
         console.print("\n[yellow]任务已由用户中断，恢复点已保留。[/yellow]")
         raise typer.Exit(code=130)
+
+
+@app.command()
+def chat(
+    workspace: Path = typer.Option(
+        Path("."), "--workspace", "-w",
+        help="对话期间固定使用的项目根目录。",
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True,
+    ),
+    max_steps: Optional[int] = typer.Option(
+        None, "--max-steps", min=1, max=100,
+        help="每轮需求可使用的最大步骤数。",
+    ),
+    read_only: bool = typer.Option(
+        False, "--read-only",
+        help="整个对话只允许读取和搜索文件。",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="启动时开启普通操作自动审批，可用 /yes off 关闭。",
+    ),
+    no_log: bool = typer.Option(
+        False, "--no-log",
+        help="不写入 JSONL 日志和 checkpoint。",
+    ),
+) -> None:
+    """启动一次后持续输入多轮编码需求。"""
+
+    checkpoint_store: CheckpointStore | None = None
+    try:
+        config_path = load_configuration()
+        settings = Settings.from_env()
+        safe_workspace = Workspace(workspace)
+        ensure_config_outside_writable_workspace(
+            config_path, safe_workspace, read_only
+        )
+        approval = InteractiveApproval(confirm_action, auto_approve=yes)
+        registry = ToolRegistry(
+            build_tools(
+                safe_workspace,
+                read_only,
+                settings.sandbox_mode,
+                settings.sandbox_image,
+            ),
+            max_output_chars=settings.max_tool_output,
+            approval=approval,
+        )
+        sinks = [RichEventSink(console)]
+        session_log = None
+        if not no_log:
+            session_log = JsonlEventSink(safe_workspace.root, read_only)
+            sinks.append(session_log)
+            checkpoint_store = CheckpointStore(
+                session_log.path.with_suffix(".checkpoint.json"),
+                safe_workspace.root,
+                read_only,
+            )
+            console.print(
+                f"会话日志：{session_log.path}", style="dim", markup=False
+            )
+
+        event_sink = CompositeEventSink(sinks)
+        context = ContextManager(
+            SYSTEM_PROMPT,
+            max_context_chars=settings.max_context_chars,
+        )
+        model = OpenAIClient(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            model=settings.model,
+            timeout=settings.timeout,
+            retry_callback=event_sink.model_retrying,
+        )
+        agent = Agent(
+            model=model,
+            context=context,
+            tools=registry,
+            events=event_sink,
+            max_steps=max_steps or settings.max_steps,
+            checkpoint_callback=(
+                checkpoint_store.save if checkpoint_store is not None else None
+            ),
+            git_review_callback=GitInspector(safe_workspace.root).inspect,
+        )
+        session = ChatSession(
+            agent=agent,
+            approval=approval,
+            workspace=safe_workspace.root,
+            read_only=read_only,
+            model_name=settings.model,
+            console=console,
+            status_function=lambda: (
+                f"上下文估算：{context.estimated_chars()} / "
+                f"{settings.max_context_chars} 字符"
+                if context.messages()
+                else "上下文：尚未开始"
+            ),
+        )
+        clean_exit = session.run()
+        if clean_exit and checkpoint_store is not None:
+            checkpoint_store.remove()
+    except (ConfigurationError, ValueError) as error:
+        console.print(f"[red]启动 Chat 失败：{error}[/red]")
+        raise typer.Exit(code=2) from error
 
 
 @app.command("eval")

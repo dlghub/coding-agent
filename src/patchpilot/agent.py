@@ -73,6 +73,22 @@ class Agent:
         self.last_summary = None
         return self._run_loop(state.task, failed_calls, evidence)
 
+    def continue_with(self, task: str) -> str:
+        """在保留既有对话上下文的前提下执行一轮新需求。"""
+
+        if not task.strip():
+            raise ValueError("任务内容不能为空")
+        self.context.add_user_message(task)
+        self.events.agent_started(task)
+        self.last_summary = None
+        return self._run_loop(task, {}, EvidenceCollector())
+
+    def reset_conversation(self) -> None:
+        """供交互模式立即开始全新对话。"""
+
+        self.context.clear()
+        self.last_summary = None
+
     def _run_loop(
         self,
         task: str,

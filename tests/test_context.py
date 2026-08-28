@@ -107,3 +107,25 @@ def test_context_snapshot_round_trip_preserves_tool_pair() -> None:
     ]
     assert messages[-2].tool_calls[0].id == "call-1"
     assert messages[-1].tool_call_id == "call-1"
+
+
+def test_context_adds_user_message_without_resetting_history() -> None:
+    context = ContextManager("system")
+    context.start("first task")
+    context.add_assistant_response(ModelResponse(content="first answer"))
+
+    context.add_user_message("follow up")
+
+    assert [message.content for message in context.messages()] == [
+        "system", "first task", "first answer", "follow up"
+    ]
+
+
+def test_context_clear_removes_messages_and_summary() -> None:
+    context = ContextManager("system")
+    context.start("task")
+    context.add_assistant_response(ModelResponse(content="answer"))
+
+    context.clear()
+
+    assert context.messages() == []

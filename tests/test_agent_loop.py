@@ -76,6 +76,22 @@ def test_agent_returns_direct_answer() -> None:
     assert model.calls[0][1].content == "检查项目"
 
 
+def test_agent_continues_with_existing_conversation_context() -> None:
+    model = FakeModelClient(
+        [ModelResponse(content="第一次回答"), ModelResponse(content="第二次回答")]
+    )
+    agent = make_agent(model)
+
+    agent.run("第一次需求")
+    answer = agent.continue_with("根据刚才结果继续")
+
+    assert answer == "第二次回答"
+    contents = [message.content for message in model.calls[1]]
+    assert "第一次需求" in contents
+    assert "第一次回答" in contents
+    assert contents[-1] == "根据刚才结果继续"
+
+
 def test_agent_executes_tool_and_returns_result_to_model() -> None:
     tool = RecordingTool()
     model = FakeModelClient(

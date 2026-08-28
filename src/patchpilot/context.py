@@ -37,6 +37,12 @@ class ContextManager:
             Message(role="user", content=task),
         ]
 
+    def clear(self) -> None:
+        """立即清空当前对话及其压缩摘要。"""
+
+        self._messages = []
+        self._summary_lines = []
+
     def add_assistant_response(self, response: ModelResponse) -> None:
         """保存模型返回的文本和工具调用。"""
 
@@ -47,6 +53,15 @@ class ContextManager:
                 tool_calls=response.tool_calls,
             )
         )
+
+    def add_user_message(self, content: str) -> None:
+        """在当前会话中追加一轮用户需求，不清空已有上下文。"""
+
+        if not content.strip():
+            raise ValueError("用户消息不能为空")
+        if not self._messages:
+            raise RuntimeError("上下文尚未开始")
+        self._messages.append(Message(role="user", content=content.strip()))
 
     def add_tool_result(self, result: ToolResult) -> None:
         """保存工具执行结果。"""
