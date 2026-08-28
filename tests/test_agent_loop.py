@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from patchpilot.agent import Agent, MaxStepsExceeded
+from patchpilot.checkpoint import AgentState
 from patchpilot.context import ContextManager
 from patchpilot.events import NullEventSink
 from patchpilot.schemas import Message, ModelResponse, ToolCall
@@ -228,9 +229,229 @@ def test_agent_stops_at_max_steps() -> None:
         make_agent(model, tool, max_steps=2).run("持续调用")
 
 
+def test_agent_resumes_from_checkpoint_with_existing_tool_context() -> None:
+    tool = RecordingTool()
+    states: list[AgentState] = []
+    first_model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall("call-1", "record", {"value": "first"})]
+            )
+        ]
+    )
+    first_agent = Agent(
+        model=first_model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([tool]),
+        events=NullEventSink(),
+        max_steps=1,
+        checkpoint_callback=states.append,
+    )
+    with pytest.raises(MaxStepsExceeded):
+        first_agent.run("继续测试")
+
+    resumed_model = FakeModelClient([ModelResponse(content="恢复后完成。")])
+    resumed_agent = Agent(
+        model=resumed_model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([tool]),
+        events=NullEventSink(),
+        max_steps=2,
+    )
+
+    answer = resumed_agent.resume(states[-1])
+
+    assert answer == "恢复后完成。"
+    received = resumed_model.calls[0]
+    assert received[-2].role == "assistant"
+    assert received[-1].role == "tool"
+    assert received[-1].tool_call_id == "call-1"
+
+
 def test_agent_rejects_empty_task_and_response() -> None:
     with pytest.raises(ValueError, match="任务内容不能为空"):
         make_agent(FakeModelClient([])).run("   ")
 
     with pytest.raises(RuntimeError, match="模型返回了空响应"):
         make_agent(FakeModelClient([ModelResponse()])).run("空响应")
+
+
+def test_summary_requires_verification_after_last_change() -> None:
+    class PatchTool(RecordingTool):
+        name = "apply_patch"
+
+    class CommandTool(RecordingTool):
+        name = "run_command"
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            self.received.append(arguments)
+            return "命令：python -m pytest -q\n退出码：0"
+
+    patch = PatchTool()
+    command = CommandTool()
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        "patch-1",
+                        "apply_patch",
+                        {"path": "app.py", "value": "change"},
+                    )
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        "test-1",
+                        "run_command",
+                        {"command": ["python", "-m", "pytest", "-q"]},
+                    )
+                ]
+            ),
+            ModelResponse(content="全部完成。"),
+        ]
+    )
+    agent = Agent(
+        model=model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([patch, command]),
+        events=NullEventSink(),
+    )
+
+    agent.run("修改并测试")
+
+    assert agent.last_summary is not None
+    assert agent.last_summary.status == "completed"
+    assert agent.last_summary.changed_files == ["app.py"]
+    assert agent.last_summary.verification_current is True
+    assert agent.last_summary.verifications[0].passed is True
+
+
+def test_summary_marks_change_after_test_as_partial() -> None:
+    class PatchTool(RecordingTool):
+        name = "apply_patch"
+
+    class CommandTool(RecordingTool):
+        name = "run_command"
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            return "命令：pytest -q\n退出码：0"
+
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("test", "run_command", {"command": ["pytest", "-q"]})
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        "patch",
+                        "apply_patch",
+                        {"path": "late.py", "value": "change"},
+                    )
+                ]
+            ),
+            ModelResponse(content="我声称已经全部完成。"),
+        ]
+    )
+    agent = Agent(
+        model=model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([PatchTool(), CommandTool()]),
+        events=NullEventSink(),
+    )
+
+    agent.run("测试后又修改")
+
+    assert agent.last_summary is not None
+    assert agent.last_summary.status == "partial"
+    assert agent.last_summary.verification_current is False
+    assert "最后一次修改" in agent.last_summary.warnings[0]
+
+
+def test_summary_records_failed_verification() -> None:
+    class CommandTool(RecordingTool):
+        name = "run_command"
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            return "命令：pytest -q\n退出码：1"
+
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("test", "run_command", {"command": ["pytest", "-q"]})
+                ]
+            ),
+            ModelResponse(content="完成。"),
+        ]
+    )
+    agent = Agent(
+        model=model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([CommandTool()]),
+        events=NullEventSink(),
+    )
+
+    agent.run("运行测试")
+
+    assert agent.last_summary is not None
+    assert agent.last_summary.status == "partial"
+    assert agent.last_summary.verifications[0].passed is False
+
+
+def test_summary_uses_latest_verification_after_change() -> None:
+    class PatchTool(RecordingTool):
+        name = "apply_patch"
+
+    class SequencedCommandTool(RecordingTool):
+        name = "run_command"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.exit_codes = iter([0, 1])
+
+        def execute(self, arguments: dict[str, Any]) -> str:
+            return f"命令：pytest -q\n退出码：{next(self.exit_codes)}"
+
+    model = FakeModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        "patch", "apply_patch", {"path": "app.py", "value": "x"}
+                    )
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall("pass", "run_command", {"command": ["pytest", "-q"]})
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        "fail",
+                        "run_command",
+                        {"command": ["pytest", "tests/test_app.py", "-q"]},
+                    )
+                ]
+            ),
+            ModelResponse(content="完成。"),
+        ]
+    )
+    agent = Agent(
+        model=model,
+        context=ContextManager("system"),
+        tools=ToolRegistry([PatchTool(), SequencedCommandTool()]),
+        events=NullEventSink(),
+    )
+
+    agent.run("验证最新状态")
+
+    assert agent.last_summary is not None
+    assert agent.last_summary.status == "partial"
+    assert agent.last_summary.verification_current is False

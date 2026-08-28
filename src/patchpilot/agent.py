@@ -6,10 +6,13 @@
 """
 
 import json
+from collections.abc import Callable
 
+from patchpilot.checkpoint import AgentState
 from patchpilot.context import ContextManager
 from patchpilot.events import EventSink, NullEventSink
 from patchpilot.model import ModelClient
+from patchpilot.outcome import EvidenceCollector, RunSummary
 from patchpilot.schemas import ToolCall, ToolResult
 from patchpilot.tools.base import ToolRegistry
 
@@ -28,6 +31,7 @@ class Agent:
         tools: ToolRegistry,
         events: EventSink | None = None,
         max_steps: int = 20,
+        checkpoint_callback: Callable[[AgentState], None] | None = None,
     ) -> None:
         if max_steps <= 0:
             raise ValueError("max_steps 必须大于 0")
@@ -36,6 +40,8 @@ class Agent:
         self.tools = tools
         self.events = events or NullEventSink()
         self.max_steps = max_steps
+        self.checkpoint_callback = checkpoint_callback
+        self.last_summary: RunSummary | None = None
 
     def run(self, task: str) -> str:
         """执行任务并返回模型的最终回答。"""
@@ -46,6 +52,31 @@ class Agent:
         self.context.start(task)
         self.events.agent_started(task)
         failed_calls: dict[str, tuple[int, str]] = {}
+        evidence = EvidenceCollector()
+        self.last_summary = None
+
+        return self._run_loop(task, failed_calls, evidence)
+
+    def resume(self, state: AgentState) -> str:
+        """从磁盘恢复点继续执行，并获得一组新的最大步骤预算。"""
+
+        self.context.restore(state.context)
+        failed_calls = {
+            key: (int(value[0]), str(value[1]))
+            for key, value in state.failed_calls.items()
+        }
+        evidence = EvidenceCollector.restore(state.evidence)
+        self.events.agent_started(f"继续任务：{state.task}")
+        self.last_summary = None
+        return self._run_loop(state.task, failed_calls, evidence)
+
+    def _run_loop(
+        self,
+        task: str,
+        failed_calls: dict[str, tuple[int, str]],
+        evidence: EvidenceCollector,
+    ) -> str:
+        self._save_checkpoint(task, failed_calls, evidence)
 
         for step in range(1, self.max_steps + 1):
             self.events.step_started(step, self.max_steps)
@@ -83,17 +114,45 @@ class Agent:
                         )
                     self.context.add_tool_result(result)
                     self.events.tool_finished(call, result)
+                    evidence.record(call, result)
+                self._save_checkpoint(task, failed_calls, evidence)
                 continue
 
             if response.content and response.content.strip():
                 answer = response.content.strip()
                 self.events.agent_finished(answer)
+                self.last_summary = evidence.build()
+                self.events.run_summary(self.last_summary)
                 return answer
 
             raise RuntimeError("模型返回了空响应")
 
-        raise MaxStepsExceeded(
-            f"Agent 已达到最大步数 {self.max_steps}，任务仍未结束"
+        message = f"Agent 已达到最大步数 {self.max_steps}，任务仍未结束"
+        self.last_summary = evidence.build(
+            forced_status="failed",
+            extra_warning=message,
+        )
+        self.events.run_summary(self.last_summary)
+        raise MaxStepsExceeded(message)
+
+    def _save_checkpoint(
+        self,
+        task: str,
+        failed_calls: dict[str, tuple[int, str]],
+        evidence: EvidenceCollector,
+    ) -> None:
+        if self.checkpoint_callback is None:
+            return
+        self.checkpoint_callback(
+            AgentState(
+                task=task,
+                context=self.context.snapshot(),
+                failed_calls={
+                    key: [count, output]
+                    for key, (count, output) in failed_calls.items()
+                },
+                evidence=evidence.snapshot(),
+            )
         )
 
     @staticmethod

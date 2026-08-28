@@ -15,6 +15,7 @@ from uuid import uuid4
 from rich.console import Console
 
 from patchpilot.schemas import ToolCall, ToolResult
+from patchpilot.outcome import RunSummary
 
 
 def safe_tool_arguments(call: ToolCall) -> dict:
@@ -36,6 +37,7 @@ class EventSink(Protocol):
     def tool_started(self, call: ToolCall) -> None: ...
     def tool_finished(self, call: ToolCall, result: ToolResult) -> None: ...
     def agent_finished(self, answer: str) -> None: ...
+    def run_summary(self, summary: RunSummary) -> None: ...
 
 
 class NullEventSink:
@@ -47,6 +49,7 @@ class NullEventSink:
     def tool_started(self, call: ToolCall) -> None: pass
     def tool_finished(self, call: ToolCall, result: ToolResult) -> None: pass
     def agent_finished(self, answer: str) -> None: pass
+    def run_summary(self, summary: RunSummary) -> None: pass
 
 
 class CompositeEventSink:
@@ -75,6 +78,9 @@ class CompositeEventSink:
 
     def agent_finished(self, answer: str) -> None:
         for sink in self.sinks: sink.agent_finished(answer)
+
+    def run_summary(self, summary: RunSummary) -> None:
+        for sink in self.sinks: sink.run_summary(summary)
 
 
 class JsonlEventSink:
@@ -137,6 +143,9 @@ class JsonlEventSink:
     def agent_finished(self, answer: str) -> None:
         self._write("agent_finished", answer=answer)
 
+    def run_summary(self, summary: RunSummary) -> None:
+        self._write("run_summary", **summary.to_dict())
+
     def _write(self, event: str, **payload: object) -> None:
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -196,3 +205,37 @@ class RichEventSink:
         self.console.print()
         self.console.rule("[bold green]任务完成[/bold green]")
         self.console.print(answer)
+
+    def run_summary(self, summary: RunSummary) -> None:
+        labels = {
+            "completed": "已完成",
+            "partial": "部分完成",
+            "failed": "失败",
+        }
+        styles = {
+            "completed": "green",
+            "partial": "yellow",
+            "failed": "red",
+        }
+        self.console.print()
+        self.console.rule("[bold]执行证据[/bold]")
+        self.console.print(
+            f"可信状态：{labels[summary.status]}",
+            style=styles[summary.status],
+        )
+        if summary.changed_files:
+            self.console.print(
+                "修改文件：" + "、".join(summary.changed_files),
+                markup=False,
+            )
+        else:
+            self.console.print("修改文件：无")
+        if summary.verifications:
+            for evidence in summary.verifications:
+                symbol = "✓" if evidence.passed else "✗"
+                command = " ".join(evidence.command)
+                self.console.print(f"{symbol} {command}", markup=False)
+        else:
+            self.console.print("验证命令：未运行")
+        for warning in summary.warnings:
+            self.console.print(f"警告：{warning}", style="yellow", markup=False)

@@ -4,6 +4,7 @@ import json
 import stat
 
 from patchpilot.events import JsonlEventSink
+from patchpilot.outcome import RunSummary, VerificationEvidence
 from patchpilot.schemas import ToolCall, ToolResult
 
 
@@ -19,14 +20,27 @@ def test_session_log_records_events_and_redacts_patch_text(tmp_path) -> None:
     sink.tool_started(call)
     sink.tool_finished(call, ToolResult("1", "apply_patch", True, "ok"))
     sink.agent_finished("done")
+    sink.run_summary(
+        RunSummary(
+            status="completed",
+            changed_files=["a.py"],
+            verifications=[
+                VerificationEvidence(["python", "-m", "pytest"], True, 2)
+            ],
+            verification_current=True,
+        )
+    )
 
     records = [json.loads(line) for line in sink.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"] for record in records] == [
         "session_created", "agent_started", "step_started",
         "model_retrying", "tool_started", "tool_finished", "agent_finished",
+        "run_summary",
     ]
     started = records[4]
     assert "old_text" not in started["arguments"]
     assert started["arguments"]["old_text_chars"] == len("secret old")
     assert stat.S_IMODE(sink.path.stat().st_mode) == 0o600
     assert stat.S_IMODE(sink.directory.stat().st_mode) == 0o700
+    assert records[-1]["status"] == "completed"
+    assert records[-1]["verifications"][0]["passed"] is True

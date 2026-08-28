@@ -91,3 +91,19 @@ def test_start_clears_previous_summary() -> None:
 def test_context_rejects_invalid_limits() -> None:
     with pytest.raises(ValueError, match="至少为 1000"):
         ContextManager("system", max_context_chars=999)
+
+
+def test_context_snapshot_round_trip_preserves_tool_pair() -> None:
+    original = ContextManager("system")
+    original.start("task")
+    add_tool_turn(original, 1, "result")
+
+    restored = ContextManager("different system")
+    restored.restore(original.snapshot())
+
+    messages = restored.messages()
+    assert [message.role for message in messages] == [
+        "system", "user", "assistant", "tool"
+    ]
+    assert messages[-2].tool_calls[0].id == "call-1"
+    assert messages[-1].tool_call_id == "call-1"

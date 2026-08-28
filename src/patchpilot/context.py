@@ -88,6 +88,26 @@ class ContextManager:
 
         return self._messages_size(self.messages())
 
+    def snapshot(self) -> dict[str, object]:
+        """导出可安全 JSON 序列化的内部上下文。"""
+
+        return {
+            "messages": [self._message_to_dict(message) for message in self._messages],
+            "summary_lines": list(self._summary_lines),
+        }
+
+    def restore(self, snapshot: dict[str, object]) -> None:
+        """从可信的本地 checkpoint 恢复上下文。"""
+
+        raw_messages = snapshot.get("messages")
+        raw_summary = snapshot.get("summary_lines", [])
+        if not isinstance(raw_messages, list) or not isinstance(raw_summary, list):
+            raise ValueError("checkpoint 上下文格式不正确")
+        self._messages = [self._message_from_dict(item) for item in raw_messages]
+        self._summary_lines = [str(item) for item in raw_summary]
+        if len(self._messages) < 2:
+            raise ValueError("checkpoint 缺少系统消息或用户任务")
+
     def _compact_if_needed(self) -> None:
         groups = self._completed_groups()
         while (
@@ -182,3 +202,41 @@ class ContextManager:
                     json.dumps(call.arguments, ensure_ascii=False, default=repr)
                 )
         return total
+
+    @staticmethod
+    def _message_to_dict(message: Message) -> dict[str, object]:
+        return {
+            "role": message.role,
+            "content": message.content,
+            "tool_call_id": message.tool_call_id,
+            "tool_calls": [
+                {"id": call.id, "name": call.name, "arguments": call.arguments}
+                for call in message.tool_calls
+            ],
+        }
+
+    @staticmethod
+    def _message_from_dict(value: object) -> Message:
+        if not isinstance(value, dict):
+            raise ValueError("checkpoint 消息格式不正确")
+        role = value.get("role")
+        if role not in {"system", "user", "assistant", "tool"}:
+            raise ValueError("checkpoint 消息角色不正确")
+        raw_calls = value.get("tool_calls", [])
+        if not isinstance(raw_calls, list):
+            raise ValueError("checkpoint 工具调用格式不正确")
+        calls = [
+            ToolCall(
+                id=str(call["id"]),
+                name=str(call["name"]),
+                arguments=dict(call["arguments"]),
+            )
+            for call in raw_calls
+            if isinstance(call, dict)
+        ]
+        return Message(
+            role=role,
+            content=value.get("content"),
+            tool_calls=calls,
+            tool_call_id=value.get("tool_call_id"),
+        )
